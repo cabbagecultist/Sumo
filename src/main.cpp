@@ -13,7 +13,7 @@ enum State
 };
 
 bool lineSensorValues[5];   // line sensor detection.  Array of [left, middle left, middle, middle right, right]
-State currentState = stateScanning;   //We start by scanning, but honestly could switch to wander if want to
+State currentState = Scanning;   //We start by scanning, but honestly could switch to wander if want to
 
 void setup() {
   // put your setup code here, to run once:
