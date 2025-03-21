@@ -24,8 +24,6 @@ enum TEST_MODE {
 TEST_MODE MODE = TEST_DISTANCE;
 
 void setup() {
-  // Wait for microcontroller cereal init
-
   // Init comms
   Serial.begin(9600);
   Wire.begin();
