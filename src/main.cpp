@@ -56,6 +56,11 @@
 #define I2C_CLOCK_SPEED_INIT 50000    // 50kHz for initialization (more reliable)
 #define I2C_DEFAULT_TIMEOUT 500       // Default I2C timeout in milliseconds
 
+// I2C Recovery Constants
+#define I2C_CLOCK_PULSE_COUNT 16      // Number of clock pulses to send when resetting bus
+#define I2C_PULSE_DELAY_US 5          // Microseconds between clock transitions
+#define USE_FAST_I2C_RESET false      // Set to true to use the faster I2C reset method
+
 // VL53L4CD Distance Sensor Constants
 #define VL53L4CD_DEFAULT_ADDRESS 0x52 // Default address before changing
 #define VL53L4CD_ADDRESS_BASE 0x2A    // Base address for assigning unique addresses
@@ -70,10 +75,6 @@
 #define SENSOR_SWITCH_INTERVAL_MS 1000 // Time between switching sensors in sequential test
 #define SCAN_INTERVAL_MS 5000          // Time between I2C scans
 #define READ_INTERVAL_MS 100           // Time between sensor readings to avoid flooding
-
-// I2C Recovery Constants
-#define I2C_CLOCK_PULSE_COUNT 16 // Number of clock pulses to send when resetting bus
-#define I2C_PULSE_DELAY_US 5     // Microseconds between clock transitions
 
 //==============================================================================
 // PIN ARRAYS AND GLOBAL VARIABLES
@@ -99,16 +100,17 @@ QTRSensors qtr;
 
 enum TestMode
 {
-  TEST_DISTANCE,          // Test all distance sensors
-  TEST_REFLECTANCE,       // Test all reflectance sensors
-  TEST_MOTOR,             // Test motor control
-  TEST_I2C_SCANNER,       // Scan I2C bus for devices
-  TEST_SINGLE_SENSOR,     // Test one distance sensor at a time
-  TEST_SEQUENTIAL_SENSORS // Test each distance sensor sequentially
+  TEST_DISTANCE,           // Test all distance sensors
+  TEST_REFLECTANCE,        // Test all reflectance sensors
+  TEST_MOTOR,              // Test motor control
+  TEST_I2C_SCANNER,        // Scan I2C bus for devices
+  TEST_SINGLE_SENSOR,      // Test one distance sensor at a time
+  TEST_SEQUENTIAL_SENSORS, // Test each distance sensor sequentially
+  TEST_INTEGRATED          // Test all systems simultaneously
 };
 
 // CONFIGURATION - Set the desired test mode here
-TestMode CURRENT_MODE = TEST_SEQUENTIAL_SENSORS;
+TestMode CURRENT_MODE = TEST_INTEGRATED;
 
 // For single sensor testing - change this value to test a different sensor (0-4)
 const uint8_t SINGLE_SENSOR_INDEX = 0;
@@ -134,6 +136,7 @@ static bool sequentialInitComplete = false;
 void setupReflectanceSensors();
 void setupDistanceSensors();
 void resetI2CBus();
+void resetI2CBusFast();
 bool testI2CAddress(byte address);
 void printI2CStatus(byte status);
 bool monitorI2CHealth();
@@ -145,6 +148,7 @@ void testSequentialSensors();
 void testAllDistanceSensors();
 void testReflectanceSensors();
 void testMotorControl();
+void testIntegratedSystems();
 
 //==============================================================================
 // SETUP FUNCTION
@@ -195,6 +199,16 @@ void setup()
     lastSensorSwitchTime = millis();
     testSequentialSensors();
     break;
+    
+  case TEST_INTEGRATED:
+    Serial.println("Initializing all systems for integrated testing");
+    setupDistanceSensors();
+    setupReflectanceSensors();
+    motorController.init();
+    motorController.setM1Brake(0);
+    motorController.setM2Brake(0);
+    Serial.println("All systems initialized for integrated testing");
+    break;
   }
 }
 
@@ -230,6 +244,10 @@ void loop()
   case TEST_SEQUENTIAL_SENSORS:
     testSequentialSensors();
     break;
+    
+  case TEST_INTEGRATED:
+    testIntegratedSystems();
+    break;
   }
 
   // Periodically monitor I2C bus health
@@ -239,7 +257,7 @@ void loop()
     if (!monitorI2CHealth())
     {
       // Bus had issues and was reset
-      if (CURRENT_MODE == TEST_SEQUENTIAL_SENSORS || CURRENT_MODE == TEST_DISTANCE)
+      if (CURRENT_MODE == TEST_SEQUENTIAL_SENSORS || CURRENT_MODE == TEST_DISTANCE || CURRENT_MODE == TEST_INTEGRATED)
       {
         // Reinitialize sensors if in a test mode that uses them heavily
         setupDistanceSensors();
@@ -627,98 +645,146 @@ void testSequentialSensors()
  * 1. Checking if SDA or SCL lines are stuck low
  * 2. Using special recovery for stuck SDA
  * 3. Sending stop condition and re-initializing the bus
+ * 
+ * This function uses the mode configured by USE_FAST_I2C_RESET to select between
+ * the thorough, reliable reset method or a faster but potentially less robust method.
  */
 void resetI2CBus()
 {
-  Serial.println("Resetting I2C bus");
-  Wire.end();
-
-  // Check if SDA line is stuck low (common failure mode)
-  pinMode(I2C_SDA_PIN, INPUT);
-  pinMode(I2C_SCL_PIN, INPUT);
-
-  bool sclHigh = digitalRead(I2C_SCL_PIN);
-  bool sdaHigh = digitalRead(I2C_SDA_PIN);
-
-  if (!sclHigh)
-  {
-    Serial.println("WARNING: SCL line is stuck LOW - severe bus error");
-  }
-
-  if (!sdaHigh)
-  {
-    Serial.println("WARNING: SDA line is stuck LOW - attempting special recovery");
-
-    // Special recovery for stuck SDA: Force SCL cycles until SDA is released
+  if (USE_FAST_I2C_RESET) {
+    resetI2CBusFast();
+  } else {
+    Serial.println("Resetting I2C bus");
+    Wire.end();
+  
+    // Check if SDA line is stuck low (common failure mode)
+    pinMode(I2C_SDA_PIN, INPUT);
+    pinMode(I2C_SCL_PIN, INPUT);
+  
+    bool sclHigh = digitalRead(I2C_SCL_PIN);
+    bool sdaHigh = digitalRead(I2C_SDA_PIN);
+  
+    if (!sclHigh)
+    {
+      Serial.println("WARNING: SCL line is stuck LOW - severe bus error");
+    }
+  
+    if (!sdaHigh)
+    {
+      Serial.println("WARNING: SDA line is stuck LOW - attempting special recovery");
+  
+      // Special recovery for stuck SDA: Force SCL cycles until SDA is released
+      pinMode(I2C_SCL_PIN, OUTPUT_OPEN_DRAIN);
+      digitalWrite(I2C_SCL_PIN, HIGH);
+  
+      // Toggle SCL up to 20 times to try to get slave to complete transaction
+      for (int i = 0; i < 20 && !digitalRead(I2C_SDA_PIN); i++)
+      {
+        digitalWrite(I2C_SCL_PIN, LOW);
+        delayMicroseconds(I2C_PULSE_DELAY_US);
+        digitalWrite(I2C_SCL_PIN, HIGH);
+        delayMicroseconds(I2C_PULSE_DELAY_US);
+      }
+  
+      // If SDA is still low, we have a serious problem
+      if (!digitalRead(I2C_SDA_PIN))
+      {
+        Serial.println("ERROR: Could not clear SDA line. Hardware problem likely!");
+      }
+      else
+      {
+        Serial.println("SDA line successfully released");
+      }
+    }
+  
+    // Standard bus recovery procedure
+    pinMode(I2C_SDA_PIN, OUTPUT_OPEN_DRAIN);
     pinMode(I2C_SCL_PIN, OUTPUT_OPEN_DRAIN);
+  
+    // Pull up SCL to ensure it's high (when in open-drain mode)
     digitalWrite(I2C_SCL_PIN, HIGH);
-
-    // Toggle SCL up to 20 times to try to get slave to complete transaction
-    for (int i = 0; i < 20 && !digitalRead(I2C_SDA_PIN); i++)
+    digitalWrite(I2C_SDA_PIN, HIGH);
+    delayMicroseconds(I2C_PULSE_DELAY_US);
+  
+    // Toggle SCL multiple times to release stuck devices
+    for (int i = 0; i < I2C_CLOCK_PULSE_COUNT; i++)
     {
       digitalWrite(I2C_SCL_PIN, LOW);
       delayMicroseconds(I2C_PULSE_DELAY_US);
       digitalWrite(I2C_SCL_PIN, HIGH);
       delayMicroseconds(I2C_PULSE_DELAY_US);
     }
-
-    // If SDA is still low, we have a serious problem
-    if (!digitalRead(I2C_SDA_PIN))
-    {
-      Serial.println("ERROR: Could not clear SDA line. Hardware problem likely!");
-    }
-    else
-    {
-      Serial.println("SDA line successfully released");
-    }
-  }
-
-  // Standard bus recovery procedure
-  pinMode(I2C_SDA_PIN, OUTPUT_OPEN_DRAIN);
-  pinMode(I2C_SCL_PIN, OUTPUT_OPEN_DRAIN);
-
-  // Pull up SCL to ensure it's high (when in open-drain mode)
-  digitalWrite(I2C_SCL_PIN, HIGH);
-  digitalWrite(I2C_SDA_PIN, HIGH);
-  delayMicroseconds(I2C_PULSE_DELAY_US);
-
-  // Toggle SCL multiple times to release stuck devices
-  for (int i = 0; i < I2C_CLOCK_PULSE_COUNT; i++)
-  {
-    digitalWrite(I2C_SCL_PIN, LOW);
+  
+    // Send STOP condition (SDA low->high while SCL is high)
+    digitalWrite(I2C_SDA_PIN, LOW);
     delayMicroseconds(I2C_PULSE_DELAY_US);
     digitalWrite(I2C_SCL_PIN, HIGH);
     delayMicroseconds(I2C_PULSE_DELAY_US);
+    digitalWrite(I2C_SDA_PIN, HIGH);
+    delayMicroseconds(I2C_PULSE_DELAY_US * 2);
+  
+    // Return pins to normal INPUT mode
+    pinMode(I2C_SDA_PIN, INPUT);
+    pinMode(I2C_SCL_PIN, INPUT);
+  
+    // Check if the bus is clear now
+    if (!digitalRead(I2C_SDA_PIN) || !digitalRead(I2C_SCL_PIN))
+    {
+      Serial.println("WARNING: I2C bus lines still not HIGH after reset attempt");
+    }
+    else
+    {
+      Serial.println("I2C bus lines are both HIGH after reset");
+    }
+  
+    // Reinitialize I2C bus
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    Wire.setClock(I2C_CLOCK_SPEED_NORMAL);
+    delay(100); // Allow time for devices to reset
+  
+    Serial.println("I2C bus reset complete");
   }
+}
 
-  // Send STOP condition (SDA low->high while SCL is high)
-  digitalWrite(I2C_SDA_PIN, LOW);
-  delayMicroseconds(I2C_PULSE_DELAY_US);
-  digitalWrite(I2C_SCL_PIN, HIGH);
-  delayMicroseconds(I2C_PULSE_DELAY_US);
-  digitalWrite(I2C_SDA_PIN, HIGH);
-  delayMicroseconds(I2C_PULSE_DELAY_US * 2);
-
-  // Return pins to normal INPUT mode
+/**
+ * Fast I2C bus reset function - uses a more aggressive approach with minimal delays
+ * This is experimental and may not work with all devices/setups, but can recover
+ * much faster from transient bus issues.
+ */
+void resetI2CBusFast()
+{
+  Serial.println("Fast I2C reset...");
+  Wire.end();
+  
+  // Quick check of bus state
   pinMode(I2C_SDA_PIN, INPUT);
   pinMode(I2C_SCL_PIN, INPUT);
-
-  // Check if the bus is clear now
-  if (!digitalRead(I2C_SDA_PIN) || !digitalRead(I2C_SCL_PIN))
-  {
-    Serial.println("WARNING: I2C bus lines still not HIGH after reset attempt");
+  
+  // Fast reset procedure - minimal timing, fewer checks
+  pinMode(I2C_SDA_PIN, OUTPUT_OPEN_DRAIN);
+  pinMode(I2C_SCL_PIN, OUTPUT_OPEN_DRAIN);
+  
+  // Send 9 clock pulses (the minimum required to ensure the slave releases the bus)
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(I2C_SCL_PIN, LOW);
+    delayMicroseconds(1); // Minimal delay
+    digitalWrite(I2C_SCL_PIN, HIGH);
+    delayMicroseconds(1); // Minimal delay
   }
-  else
-  {
-    Serial.println("I2C bus lines are both HIGH after reset");
-  }
-
-  // Reinitialize I2C bus
+  
+  // Quick STOP condition
+  digitalWrite(I2C_SDA_PIN, LOW);
+  delayMicroseconds(1);
+  digitalWrite(I2C_SCL_PIN, HIGH);
+  delayMicroseconds(1);
+  digitalWrite(I2C_SDA_PIN, HIGH);
+  delayMicroseconds(2);
+  
+  // Reinitialize I2C bus immediately
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(I2C_CLOCK_SPEED_NORMAL);
-  delay(100); // Allow time for devices to reset
-
-  Serial.println("I2C bus reset complete");
+  
+  Serial.println("Fast I2C reset complete");
 }
 
 /**
@@ -814,4 +880,84 @@ bool monitorI2CHealth()
   }
 
   return true;
+}
+
+/**
+ * Integrated test for all systems - tests distance sensors, reflectance sensors, and motors simultaneously
+ */
+void testIntegratedSystems()
+{
+  static uint32_t lastDistanceSensorUpdate = 0;
+  static uint32_t lastReflectanceSensorUpdate = 0;
+  static uint32_t lastMotorUpdate = 0;
+  static uint32_t lastI2CReset = 0;
+  static bool distanceSensorError = false;
+  
+  unsigned long currentTime = millis();
+  
+  // Test distance sensors (less frequently to avoid bus congestion)
+  if (currentTime - lastDistanceSensorUpdate > 100) {
+    Serial.println("--- DISTANCE SENSORS ---");
+    bool sensorTimeout = false;
+    
+    for (uint8_t i = 0; i < DISTANCE_SENSOR_COUNT; i++) {
+      int16_t distance = distanceSensors[i].read();
+      
+      if (distanceSensors[i].timeoutOccurred()) {
+        Serial.printf("Sensor %d: TIMEOUT\n", i);
+        sensorTimeout = true;
+        distanceSensorError = true;
+      } else {
+        Serial.printf("Sensor %d: %d mm\n", i, distance);
+      }
+    }
+    
+    // Reset I2C bus if needed and not reset recently
+    if (sensorTimeout && (currentTime - lastI2CReset > 1000)) {
+      Serial.println("Timeout detected, performing fast I2C reset...");
+      resetI2CBus();
+      lastI2CReset = currentTime;
+    }
+    
+    lastDistanceSensorUpdate = currentTime;
+  }
+  
+  // Test reflectance sensors
+  if (currentTime - lastReflectanceSensorUpdate > 50) {
+    Serial.println("--- REFLECTANCE SENSORS ---");
+    qtr.read(reflectanceSensorValues);
+    
+    for (uint8_t i = 0; i < REFLECTANCE_SENSOR_COUNT; i++) {
+      Serial.printf("R%d: %d\t", i, reflectanceSensorValues[i]);
+    }
+    Serial.println();
+    
+    lastReflectanceSensorUpdate = currentTime;
+  }
+  
+  // Test motors - gentle movement pattern
+  if (currentTime - lastMotorUpdate > 250) {
+    // Only run motors if no sensor errors to avoid dangerous movement with no sensing
+    if (!distanceSensorError) {
+      int speedM1 = (int)(sin(((float)currentTime) * 0.001) * 200);
+      int speedM2 = (int)(cos(((float)currentTime) * 0.001) * 200);
+      
+      Serial.printf("--- MOTORS --- M1: %d  M2: %d\n", speedM1, speedM2);
+      
+      // motorController.setM1Speed(speedM1);
+      // motorController.setM2Speed(speedM2);
+      motorController.setM1Speed(0);
+      motorController.setM2Speed(0);
+    } else {
+      // Safety stop if sensors are having issues
+      motorController.setM1Brake(400);
+      motorController.setM2Brake(400);
+      Serial.println("--- MOTORS --- EMERGENCY STOP (sensor error)");
+    }
+    
+    lastMotorUpdate = currentTime;
+  }
+  
+  // Small delay to prevent serial output flooding
+  delay(10);
 }
