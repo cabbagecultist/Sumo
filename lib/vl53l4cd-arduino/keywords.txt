@@ -1,0 +1,25 @@
+VL53L4CD	KEYWORD1
+
+setBus	KEYWORD2
+getBus	KEYWORD2
+setAddress	KEYWORD2
+getAddress	KEYWORD2
+init	KEYWORD2
+writeReg	KEYWORD2
+writeReg16Bit	KEYWORD2
+writeReg32Bit	KEYWORD2
+readReg	KEYWORD2
+readReg16Bit	KEYWORD2
+readReg32Bit	KEYWORD2
+setRangeTiming	KEYWORD2
+getTimingBudget	KEYWORD2
+getInterMeasurement	KEYWORD2
+startContinuous	KEYWORD2
+stopContinuous	KEYWORD2
+read	KEYWORD2
+readRangeContinuousMillimeters	KEYWORD2
+dataReady	KEYWORD2
+clearInterrupt	KEYWORD2
+setTimeout	KEYWORD2
+getTimeout	KEYWORD2
+timeoutOccurred	KEYWORD2
