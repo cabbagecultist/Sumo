@@ -1,8 +1,4 @@
-// Haven't included Arduino.h here because it's already included in I2CHelper.h (It needs the byte type)
 #include "I2CHelper.h"
-#include <Wire.h>
-#include <Constants.h>
-
 
 //==============================================================================
 // I2C BUS UTILITIES

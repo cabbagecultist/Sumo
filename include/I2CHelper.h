@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <Wire.h>
+#include <Constants.h>
 
 class I2CHelper {
     public:
