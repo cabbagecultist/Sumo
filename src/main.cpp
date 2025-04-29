@@ -732,11 +732,10 @@ public:
     Serial.println();
 
     // Reset I2C bus if needed (with cooldown period)
-    if (needsReset && (millis() - lastResetTime > RESET_INTERVAL_MS))
+    if (needsReset)
     {
       Serial.println("Timeout detected, resetting I2C bus...");
-      i2c.resetBus();
-      lastResetTime = millis();
+      i2c.resetBus(); // this function already does the reset timeout
     }
 
     // delay(10); // Small delay to prevent serial flooding
@@ -857,7 +856,13 @@ private:
   MotorDriver &motors;
   PIDController pid;
   I2CManager &i2c;
-  unsigned long lastResetTime = 0;
+  ReflectanceSensorArray &reflectanceSensors;
+  unsigned long edgeAvoidanceEndTime = 0; // Time when edge avoidance maneuver should end
+
+  // Edge avoidance constants
+  const int EDGE_AVOIDANCE_DURATION_MS = 500; // How long to back up when edge detected
+  const int EDGE_AVOIDANCE_SPEED = 300;       // Speed to back up at
+  bool edgeDetectedLeft = false; // when edge detected keep track of which side hit first
 
   // Sensor physical configuration
   const float SENSOR_ANGLES[DISTANCE_SENSOR_COUNT] = {-36.0, -18.0, 0.0, 18.0, 36.0}; // Angles in degrees
@@ -868,22 +873,43 @@ private:
   float angleHistory[HISTORY_SIZE] = {0}; // Store recent target angles
   int historyIndex = 0;
 
-  // Sensor readings cache
-  struct SensorReading
+  // Unified sensor data structure
+  struct DistanceSensorReading
   {
     int distance;
     bool valid;
     bool timeout;
   };
-  SensorReading readings[DISTANCE_SENSOR_COUNT];
+  
+  struct ReflectanceSensorReading
+  {
+    uint16_t value;
+    bool isDetectingLine;
+  };
+  
+  struct SensorData
+  {
+    DistanceSensorReading distanceSensors[DISTANCE_SENSOR_COUNT];
+    ReflectanceSensorReading reflectanceSensors[REFLECTANCE_SENSOR_COUNT];
+    bool distanceSensorsRead;
+    bool reflectanceSensorsRead;
+    bool needsI2CReset;
+    
+    // Constructor initializes all values
+    SensorData() : distanceSensorsRead(false), reflectanceSensorsRead(false), needsI2CReset(false) {}
+  };
+  
+  // Main sensor data instance
+  SensorData sensorData;
 
 public:
   TrackingMode(DistanceSensorArray &sensorArray, MotorDriver &motorDriver,
-               I2CManager &i2cManager)
+               I2CManager &i2cManager, ReflectanceSensorArray &reflectArray)
       : sensors(sensorArray),
         motors(motorDriver),
         pid(PID_KP, PID_KI, PID_KD, PID_MAX_OUTPUT),
-        i2c(i2cManager) {}
+        i2c(i2cManager),
+        reflectanceSensors(reflectArray) {}
 
   void setup() override
   {
@@ -898,15 +924,41 @@ public:
       angleHistory[i] = 0;
     }
 
-    Serial.println("Improved tracking mode initialized - robot will track objects with angle-aware algorithms");
+    Serial.println("Improved tracking mode initialized - robot will track objects with angle-aware algorithms and edge detection");
   }
 
   void loop() override
   {
-    bool needsReset = false;
+    // Reset sensor data status for this loop iteration
+    sensorData.distanceSensorsRead = false;
+    sensorData.reflectanceSensorsRead = false;
+    sensorData.needsI2CReset = false;
     
-    // Read all sensors once at the beginning and cache results
-    needsReset = readAllSensors();
+    // Read all sensors independently
+    readDistanceSensors();
+    readReflectanceSensors();
+    
+    // Check for edge detection - this has highest priority
+    if (isEdgeDetected())
+    {
+      handleEdgeDetection();
+      return; // Skip the rest of the loop
+    }
+    
+    // Check if we're in the middle of an edge avoidance maneuver
+    if (millis() < edgeAvoidanceEndTime)
+    {
+      // Continue the avoidance maneuver
+      if(edgeDetectedLeft){
+        motors.setSpeeds(-EDGE_AVOIDANCE_SPEED/2, -EDGE_AVOIDANCE_SPEED);
+      }else{
+        motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED/2);
+      }
+      Serial.println("| Continuing edge avoidance maneuver...");
+      return;
+    }
+    
+    // Normal tracking behavior - proceed only if no edge detected
     
     // Determine target angle using the closest sensor and simple averaging with neighbors when needed
     float targetAngle = calculateWeightedTargetAngle();
@@ -953,12 +1005,11 @@ public:
       pid.reset();
     }
 
-    // Reset I2C bus if needed
-    if (needsReset && (millis() - lastResetTime > RESET_INTERVAL_MS))
+    // Reset I2C bus if needed - separate from sensor reading for better error handling
+    if (sensorData.needsI2CReset)
     {
       Serial.println("Timeout detected, resetting I2C bus...");
-      i2c.resetBus();
-      lastResetTime = millis();
+      i2c.resetBus(); // this function already does the reset timeout
     }
     
     // Small delay to prevent serial output flooding
@@ -967,28 +1018,134 @@ public:
 
   const char *getName() override
   {
-    return "IMPROVED TRACKING WITH ANGLE AWARENESS";
+    return "TRACKING WITH EDGE DETECTION";
   }
 
 private:
-  // Read all sensors once and store the readings
-  bool readAllSensors()
+  // Read distance sensors and store results in the unified data structure
+  void readDistanceSensors()
   {
-    bool needsReset = false;
-    for (int i = 0; i < sensors.getCount(); i++)
+    // Always try to read distance sensors, but handle failures gracefully
+    try {
+      for (int i = 0; i < sensors.getCount(); i++)
+      {
+        int distance;
+        bool valid = sensors.readSensor(i, distance);
+        
+        sensorData.distanceSensors[i].valid = valid;
+        sensorData.distanceSensors[i].distance = distance;
+        sensorData.distanceSensors[i].timeout = !valid && sensors.getSensor(i).timeoutOccurred();
+        
+        if (sensorData.distanceSensors[i].timeout)
+        {
+          sensorData.needsI2CReset = true;
+        }
+      }
+      sensorData.distanceSensorsRead = true;
+    }
+    catch (...) {
+      // If any exception occurs, mark distance sensors as not read but continue
+      sensorData.distanceSensorsRead = false;
+      Serial.println("Error reading distance sensors");
+    }
+  }
+  
+  // Read reflectance sensors and store results in the unified data structure
+  void readReflectanceSensors()
+  {
+    // Always try to read reflectance sensors, independent of distance sensors
+    try {
+      reflectanceSensors.read();
+      
+      for (int i = 0; i < REFLECTANCE_SENSOR_COUNT; i++)
+      {
+        sensorData.reflectanceSensors[i].value = reflectanceSensors.getValue(i);
+        sensorData.reflectanceSensors[i].isDetectingLine = reflectanceSensors.isDetectingLine(i);
+      }
+      sensorData.reflectanceSensorsRead = true;
+    }
+    catch (...) {
+      // If any exception occurs, mark reflectance sensors as not read but continue
+      sensorData.reflectanceSensorsRead = false;
+      Serial.println("Error reading reflectance sensors");
+    }
+  }
+
+  // Check if any reflectance sensor detects an edge (white line)
+  bool isEdgeDetected()
+  {
+    // Only check if reflectance sensors were successfully read
+    if (!sensorData.reflectanceSensorsRead) {
+      return false;
+    }
+    
+    // Check each reflectance sensor
+    for (int i = 0; i < REFLECTANCE_SENSOR_COUNT; i++)
     {
-      readings[i].valid = sensors.readSensor(i, readings[i].distance);
-      readings[i].timeout = !readings[i].valid && sensors.getSensor(i).timeoutOccurred();
-      if(readings[i].timeout){
-        needsReset = true;
+      if (sensorData.reflectanceSensors[i].isDetectingLine)
+      {
+        return true;
       }
     }
-    return needsReset;
+    return false;
+  }
+  
+  // Handle edge detection - backup and turn away from the edge
+  void handleEdgeDetection()
+  {
+    // Only proceed if reflectance sensors were successfully read
+    if (!sensorData.reflectanceSensorsRead) {
+      return;
+    }
+    
+    // Determine which sensor detected the edge
+    int edgeSensorIndex = -1;
+    for (int i = 0; i < REFLECTANCE_SENSOR_COUNT; i++)
+    {
+      if (sensorData.reflectanceSensors[i].isDetectingLine)
+      {
+        edgeSensorIndex = i;
+        break;
+      }
+    }
+    
+    // Start the edge avoidance maneuver
+    edgeAvoidanceEndTime = millis() + EDGE_AVOIDANCE_DURATION_MS;
+    
+    // Backup based on which sensor detected the edge
+    if (edgeSensorIndex == 0) // Left sensor
+    {
+      // Turn more to the right while backing up
+      motors.setSpeeds(-EDGE_AVOIDANCE_SPEED/2, -EDGE_AVOIDANCE_SPEED);
+      edgeDetectedLeft = true;
+      Serial.printf("| EDGE DETECTED on left sensor! Backing away to the right\n");
+    }
+    else if (edgeSensorIndex == 1) // Right sensor
+    {
+      // Turn more to the left while backing up
+      motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED/2);
+      edgeDetectedLeft = false;
+      Serial.printf("| EDGE DETECTED on right sensor! Backing away to the left\n");
+    }
+    else
+    {
+      // Straight back if can't determine which sensor or multiple sensors
+      motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
+      Serial.printf("| EDGE DETECTED! Backing away\n");
+    }
+    
+    // Reset PID to avoid accumulated error
+    pid.reset();
   }
 
   // Calculate target angle using the closest sensor or average with its neighbor
   float calculateWeightedTargetAngle()
   {
+    // If distance sensors weren't read, return 0
+    if (!sensorData.distanceSensorsRead) {
+      return 0;
+    }
+    
     // Find the two sensors with lowest distance readings
     int lowestDistance = INT_MAX;
     int secondLowestDistance = INT_MAX;
@@ -998,21 +1155,21 @@ private:
     // Find the two closest sensors
     for (int i = 0; i < sensors.getCount(); i++)
     {
-      if (readings[i].valid)
+      if (sensorData.distanceSensors[i].valid)
       {
-        if (readings[i].distance < lowestDistance)
+        if (sensorData.distanceSensors[i].distance < lowestDistance)
         {
           // This is now the closest, push previous closest to second place
           secondLowestDistance = lowestDistance;
           secondLowestIndex = lowestIndex;
           
-          lowestDistance = readings[i].distance;
+          lowestDistance = sensorData.distanceSensors[i].distance;
           lowestIndex = i;
         }
-        else if (readings[i].distance < secondLowestDistance)
+        else if (sensorData.distanceSensors[i].distance < secondLowestDistance)
         {
           // This is the second closest
-          secondLowestDistance = readings[i].distance;
+          secondLowestDistance = sensorData.distanceSensors[i].distance;
           secondLowestIndex = i;
         }
       }
@@ -1061,31 +1218,70 @@ private:
   // Display all sensor readings for debugging
   void displaySensorReadings()
   {
-    for (int i = 0; i < sensors.getCount(); i++)
-    {
-      if (readings[i].timeout)
+    // Only display distance sensor readings if they were successfully read
+    if (sensorData.distanceSensorsRead) {
+      for (int i = 0; i < sensors.getCount(); i++)
       {
-        Serial.print("TOUT     | ");
+        if (sensorData.distanceSensors[i].timeout)
+        {
+          Serial.print("TOUT     | ");
+        }
+        else if (sensorData.distanceSensors[i].valid)
+        {
+          Serial.printf("S%d: %4d | ", i, sensorData.distanceSensors[i].distance);
+        }
+        else
+        {
+          Serial.printf("INVL     | ");
+        }
       }
-      else if (readings[i].valid)
-      {
-        Serial.printf("S%d: %4d | ", i, readings[i].distance);
-      }
-      else
-      {
-        Serial.printf("INVL     | ");
-      }
+    } else {
+      Serial.print("Distance sensors: N/A | ");
     }
+    
+    // Display reflectance sensor readings if available
+    if (sensorData.reflectanceSensorsRead) {
+      for (int i = 0; i < REFLECTANCE_SENSOR_COUNT; i++) {
+        Serial.printf("R%d: %4d (%s) | ", i, 
+                     sensorData.reflectanceSensors[i].value,
+                     sensorData.reflectanceSensors[i].isDetectingLine ? "WHITE" : "BLACK");
+      }
+    } else {
+      Serial.print("Reflectance sensors: N/A | ");
+    }
+    
+    Serial.println();
   }
 
+  // Get the closest valid distance reading
+  int getClosestDistance()
+  {
+    // If distance sensors weren't read, return -1 (no valid distance)
+    if (!sensorData.distanceSensorsRead) {
+      return -1;
+    }
+    
+    int minDistance = INT_MAX;
+    
+    for (int i = 0; i < sensors.getCount(); i++)
+    {
+      if (sensorData.distanceSensors[i].valid && sensorData.distanceSensors[i].distance < minDistance)
+      {
+        minDistance = sensorData.distanceSensors[i].distance;
+      }
+    }
+    
+    return (minDistance == INT_MAX) ? -1 : minDistance;
+  }
+  
   // Calculate strategic speed based on distance to target and alignment error
   int calculateStrategicSpeed(int distance, float alignmentError)
   {
     // Define distance thresholds
     const int STOP_DISTANCE = 10;       // mm - minimum safe distance, stop when closer than this
-    const int IMPACT_DISTANCE = 300;    // mm - distance to start accelerating for impact
-    const int ALIGNMENT_DISTANCE = 500; // mm - distance to start precision alignment
-    const int MAX_DISTANCE = 800;       // mm - maximum distance to consider for speed scaling
+    const int IMPACT_DISTANCE = 400;    // mm - distance to start accelerating for impact
+    const int ALIGNMENT_DISTANCE = 600; // mm - distance to start precision alignment
+    const int MAX_DISTANCE = 900;       // mm - maximum distance to consider for speed scaling
     
     // Define speed settings
     const int MAX_SPEED = 400;          // maximum motor speed for far distances
@@ -1120,22 +1316,6 @@ private:
     // Between alignment distance and max distance, scale from max speed to alignment speed
     float speedRatio = (float)(distance - ALIGNMENT_DISTANCE) / (MAX_DISTANCE - ALIGNMENT_DISTANCE);
     return ALIGNMENT_SPEED + (int)((MAX_SPEED - ALIGNMENT_SPEED) * speedRatio);
-  }
-  
-  // Get the closest valid distance reading
-  int getClosestDistance()
-  {
-    int minDistance = INT_MAX;
-    
-    for (int i = 0; i < sensors.getCount(); i++)
-    {
-      if (readings[i].valid && readings[i].distance < minDistance)
-      {
-        minDistance = readings[i].distance;
-      }
-    }
-    
-    return (minDistance == INT_MAX) ? -1 : minDistance;
   }
 };
 
@@ -1181,7 +1361,7 @@ public:
         reflectanceMode(reflectanceSensors),
         motorMode(motors),
         scannerMode(i2c),
-        trackingMode(distanceSensors, motors, i2c)
+        trackingMode(distanceSensors, motors, i2c, reflectanceSensors)
   {
     // Set default test mode
     selectedMode = MODE_TRACKING;
