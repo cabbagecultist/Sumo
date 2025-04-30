@@ -70,6 +70,11 @@ const uint8_t DISTANCE_SENSOR_XSHUT_PINS[DISTANCE_SENSOR_COUNT] = {16, 17, 5, 18
 // If using RC mode with QTR sensors, pins must support both INPUT and OUTPUT
 const uint8_t REFLECTANCE_SENSOR_PINS[REFLECTANCE_SENSOR_COUNT] = {4, 2}; // Pin 0 and 15 available as backup
 
+// IR Start Module pin - Enables/Disables robot
+// IMPORTANT: This module can use INPUT ONLY pins!
+// TODO: SET CORRECT PINS NUMBER
+const uint8_t IR_START_MODULE_PIN = 34;
+
 //==============================================================================
 // CLASS DECLARATIONS
 //==============================================================================
@@ -80,6 +85,7 @@ class DistanceSensorArray;
 class PIDController;
 class MotorDriver;
 class ReflectanceSensorArray;
+class IRStartModule;
 class TestMode;
 class SumoBot;
 
@@ -652,6 +658,28 @@ public:
 };
 
 /**
+ * Class to manage the IR Start Module
+ */
+class IRStartModule
+{
+  private:
+    const uint8_t pin;
+
+  public:
+    IRStartModule(const uint8_t startModulePin)
+      : pin(startModulePin) {}
+
+    void init() 
+    {
+      pinMode(pin, INPUT);
+    }
+
+    bool startModuleEnabled() {
+      return digitalRead(pin);
+    }
+};
+
+/**
  * Base class for all test modes
  */
 class TestMode
@@ -860,6 +888,7 @@ private:
   PIDController pid;                    // PID controller for smooth movements
   I2CManager &i2c;                      // I2C communication manager
   ReflectanceSensorArray &reflectanceSensors; // Edge detection sensors
+  IRStartModule &startModule;           // IR Start Module to restrict robot movement until triggered
   
   //==============================================================================
   // CONSTANTS
@@ -941,12 +970,13 @@ public:
    * Constructor initializes all components
    */
   TrackingMode(DistanceSensorArray &sensorArray, MotorDriver &motorDriver,
-               I2CManager &i2cManager, ReflectanceSensorArray &reflectArray)
+               I2CManager &i2cManager, ReflectanceSensorArray &reflectArray, IRStartModule &irStartModule)
       : distanceSensors(sensorArray),
         motors(motorDriver),
         pid(PID_KP, PID_KI, PID_KD, PID_MAX_OUTPUT),
         i2c(i2cManager),
-        reflectanceSensors(reflectArray) {}
+        reflectanceSensors(reflectArray),
+        startModule(irStartModule) {}
 
   /**
    * Initialize tracking mode
@@ -973,32 +1003,34 @@ public:
    */
   void loop() override
   {
-    // Reset sensor data status for this loop iteration
-    sensorData.distanceSensorsRead = false;
-    sensorData.reflectanceSensorsRead = false;
-    sensorData.needsI2CReset = false;
-    
-    // Read all sensors independently
-    readDistanceSensors();
-    readReflectanceSensors();
-    
-    // Process sensors and control robot
-    if (handleEdgeDetectionIfNeeded()) {
-      return; // Skip further processing if handling edge
-    }
-    
-    // Normal tracking behavior - proceed only if no edge detected
-    trackOpponent();
+    if (startModule.startModuleEnabled()) {
+      // Reset sensor data status for this loop iteration
+      sensorData.distanceSensorsRead = false;
+      sensorData.reflectanceSensorsRead = false;
+      sensorData.needsI2CReset = false;
+      
+      // Read all sensors independently
+      readDistanceSensors();
+      readReflectanceSensors();
+      
+      // Process sensors and control robot
+      if (handleEdgeDetectionIfNeeded()) {
+        return; // Skip further processing if handling edge
+      }
+      
+      // Normal tracking behavior - proceed only if no edge detected
+      trackOpponent();
 
-    // Reset I2C bus if needed - separate from sensor reading for better error handling
-    if (sensorData.needsI2CReset)
-    {
-      Serial.println("Timeout detected, resetting I2C bus...");
-      i2c.resetBus();
+      // Reset I2C bus if needed - separate from sensor reading for better error handling
+      if (sensorData.needsI2CReset)
+      {
+        Serial.println("Timeout detected, resetting I2C bus...");
+        i2c.resetBus();
+      }
+      
+      // Small delay to prevent serial output flooding
+      delay(10);
     }
-    
-    // Small delay to prevent serial output flooding
-    delay(10);
   }
 
   /**
@@ -1450,6 +1482,7 @@ private:
   DistanceSensorArray distanceSensors;
   ReflectanceSensorArray reflectanceSensors;
   MotorDriver motors;
+  IRStartModule startModule;
 
   // Test modes
   DistanceSensorTestMode distanceMode;
@@ -1467,11 +1500,12 @@ public:
         distanceSensors(DISTANCE_SENSOR_XSHUT_PINS, DISTANCE_SENSOR_COUNT, i2c),
         reflectanceSensors(REFLECTANCE_SENSOR_PINS, REFLECTANCE_SENSOR_COUNT),
         motors(27, 14, 12, 255, 254, 33, 25, 26, 253, 252),
+        startModule(IR_START_MODULE_PIN),
         distanceMode(distanceSensors, i2c),
         reflectanceMode(reflectanceSensors),
         motorMode(motors),
         scannerMode(i2c),
-        trackingMode(distanceSensors, motors, i2c, reflectanceSensors)
+        trackingMode(distanceSensors, motors, i2c, reflectanceSensors, startModule)
   {
     // Set default test mode
     selectedMode = MODE_TRACKING;
