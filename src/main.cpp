@@ -645,7 +645,7 @@ public:
     return 0;
   }
 
-  bool isDetectingLine(int index, int threshold = 1000)
+  bool isDetectingLine(int index, int threshold = 900)
   {
     return getValue(index) < threshold;
   }
@@ -855,7 +855,7 @@ private:
   //==============================================================================
   // HARDWARE COMPONENTS
   //==============================================================================
-  DistanceSensorArray &sensors;         // Distance sensors for opponent detection
+  DistanceSensorArray &distanceSensors;         // Distance sensors for opponent detection
   MotorDriver &motors;                  // Motors for movement control
   PIDController pid;                    // PID controller for smooth movements
   I2CManager &i2c;                      // I2C communication manager
@@ -942,7 +942,7 @@ public:
    */
   TrackingMode(DistanceSensorArray &sensorArray, MotorDriver &motorDriver,
                I2CManager &i2cManager, ReflectanceSensorArray &reflectArray)
-      : sensors(sensorArray),
+      : distanceSensors(sensorArray),
         motors(motorDriver),
         pid(PID_KP, PID_KI, PID_KD, PID_MAX_OUTPUT),
         i2c(i2cManager),
@@ -953,7 +953,8 @@ public:
    */
   void setup() override
   {
-    sensors.init();
+    distanceSensors.init();
+    reflectanceSensors.init();
     motors.init();
     motors.stop();
     pid.reset();
@@ -1020,14 +1021,14 @@ private:
     // Always try to read distance sensors, but handle failures gracefully
     try
     {
-      for (int i = 0; i < sensors.getCount(); i++)
+      for (int i = 0; i < distanceSensors.getCount(); i++)
       {
         int distance;
-        bool valid = sensors.readSensor(i, distance);
+        bool valid = distanceSensors.readSensor(i, distance);
         
         sensorData.distanceSensors[i].valid = valid;
         sensorData.distanceSensors[i].distance = distance;
-        sensorData.distanceSensors[i].timeout = !valid && sensors.getSensor(i).timeoutOccurred();
+        sensorData.distanceSensors[i].timeout = !valid && distanceSensors.getSensor(i).timeoutOccurred();
         
         if (sensorData.distanceSensors[i].timeout)
         {
@@ -1113,11 +1114,11 @@ private:
       // Continue the avoidance maneuver
       if (edgeDetectedLeft)
       {
-        motors.setSpeeds(-EDGE_AVOIDANCE_SPEED / 2, -EDGE_AVOIDANCE_SPEED);
+        motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, EDGE_AVOIDANCE_SPEED);
       }
       else
       {
-        motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED / 2);
+        motors.setSpeeds(EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
       }
       Serial.println("| Continuing edge avoidance maneuver...");
       return true; // Still handling edge avoidance
@@ -1217,22 +1218,23 @@ private:
       // Apply speeds to motors directly
       motors.setSpeeds(leftSpeed, rightSpeed);
       
-      Serial.printf("| Target Angle: %+4.1f° | Error: %+4.2f | Distance: %4d | Speed: %3d | Rotation: %+3d| LeftM:%+3d| RightM:%+3d\n", 
+      Serial.printf("| Target Angle: %+4.1f° | Error: %+4.2f | Distance: %4d | Speed: %3d | Rotation: %+3d| LeftM:%+3d| RightM:%+3d", 
                   targetAngle, error, closestDistance, forwardSpeed, rotationSpeed, leftSpeed, rightSpeed);
     }
     else
     {
       // No valid targets found, stop for now to make it easier to test things out 
-      motors.setBrakes(400, 400);
+      // motors.setBrakes(400, 400);
       
       // Alternative search strategy (commented out for testing)
-      // motors.setSpeeds(MAX_SPEED, MAX_SPEED);
+      motors.setSpeeds(MAX_SPEED, MAX_SPEED);
       
       Serial.println("| No valid target, stopping...");
       
       // Reset PID when no target is found
       pid.reset();
     }
+    Serial.println();
   }
 
   /**
@@ -1253,7 +1255,7 @@ private:
     int secondLowestIndex = -1;
     
     // Find the two closest sensors
-    for (int i = 0; i < sensors.getCount(); i++)
+    for (int i = 0; i < distanceSensors.getCount(); i++)
     {
       if (sensorData.distanceSensors[i].valid)
       {
@@ -1330,7 +1332,7 @@ private:
     
     int minDistance = INT_MAX;
     
-    for (int i = 0; i < sensors.getCount(); i++)
+    for (int i = 0; i < distanceSensors.getCount(); i++)
     {
       if (sensorData.distanceSensors[i].valid && sensorData.distanceSensors[i].distance < minDistance)
       {
@@ -1387,7 +1389,7 @@ private:
     // Only display distance sensor readings if they were successfully read
     if (sensorData.distanceSensorsRead)
     {
-      for (int i = 0; i < sensors.getCount(); i++)
+      for (int i = 0; i < distanceSensors.getCount(); i++)
       {
         if (sensorData.distanceSensors[i].timeout)
         {
@@ -1423,7 +1425,7 @@ private:
       Serial.print("Reflectance sensors: N/A | ");
     }
     
-    Serial.println();
+    // Serial.println();
   }
 };
 
