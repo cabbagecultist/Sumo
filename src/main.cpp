@@ -1003,34 +1003,40 @@ public:
    */
   void loop() override
   {
-    if (startModule.startModuleEnabled()) {
-      // Reset sensor data status for this loop iteration
-      sensorData.distanceSensorsRead = false;
-      sensorData.reflectanceSensorsRead = false;
-      sensorData.needsI2CReset = false;
-      
-      // Read all sensors independently
-      readDistanceSensors();
-      readReflectanceSensors();
-      
-      // Process sensors and control robot
-      if (handleEdgeDetectionIfNeeded()) {
-        return; // Skip further processing if handling edge
-      }
-      
-      // Normal tracking behavior - proceed only if no edge detected
-      trackOpponent();
-
-      // Reset I2C bus if needed - separate from sensor reading for better error handling
-      if (sensorData.needsI2CReset)
-      {
-        Serial.println("Timeout detected, resetting I2C bus...");
-        i2c.resetBus();
-      }
-      
-      // Small delay to prevent serial output flooding
-      delay(10);
+    // Only proceed if the Start Module is enabled and disable motors if not
+    if (!startModule.startModuleEnabled()) 
+    {
+      motors.setSpeeds(0, 0);
+      return;
     }
+
+
+    // Reset sensor data status for this loop iteration
+    sensorData.distanceSensorsRead = false;
+    sensorData.reflectanceSensorsRead = false;
+    sensorData.needsI2CReset = false;
+    
+    // Read all sensors independently
+    readDistanceSensors();
+    readReflectanceSensors();
+    
+    // Process sensors and control robot
+    if (handleEdgeDetectionIfNeeded()) {
+      return; // Skip further processing if handling edge
+    }
+    
+    // Normal tracking behavior - proceed only if no edge detected
+    trackOpponent();
+
+    // Reset I2C bus if needed - separate from sensor reading for better error handling
+    if (sensorData.needsI2CReset)
+    {
+      Serial.println("Timeout detected, resetting I2C bus...");
+      i2c.resetBus();
+    }
+    
+    // Small delay to prevent serial output flooding
+    delay(10);
   }
 
   /**
