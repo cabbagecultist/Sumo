@@ -988,6 +988,7 @@ public:
     motors.init();
     motors.stop();
     pid.reset();
+    startModule.init(); 
 
     // Initialize angle history
     for (int i = 0; i < HISTORY_SIZE; i++)
@@ -1007,6 +1008,7 @@ public:
     if (!startModule.startModuleEnabled()) 
     {
       motors.setSpeeds(0, 0);
+      Serial.println("Module disabled");
       return;
     }
 
