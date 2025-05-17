@@ -427,8 +427,8 @@ public:
 
   void setSpeeds(int leftSpeed, int rightSpeed)
   {
-    shield.setM1Speed(leftSpeed);
-    shield.setM2Speed(rightSpeed);
+    shield.setM1Speed(leftSpeed*1);
+    shield.setM2Speed(rightSpeed*1);
   }
 
   void setBrakes(int leftBrake, int rightBrake)
@@ -961,8 +961,14 @@ private:
     SensorData() : distanceSensorsRead(false), reflectanceSensorsRead(false), needsI2CReset(false) {}
   };
 
+  bool lastLineDetectedLeft = false;
+  bool lastLineDetectedRight = false;
   // Main sensor data instance
   SensorData sensorData;
+
+  // Add counters for consecutive line detections
+  int reflectanceConsecutiveLineCount[REFLECTANCE_SENSOR_COUNT] = {0};
+  const int CONSECUTIVE_LINE_THRESHOLD = 3;
 
 public:
   //==============================================================================
@@ -1007,6 +1013,7 @@ public:
    */
   void loop() override
   {
+
     // Only proceed if the Start Module is enabled and disable motors if not
     if (USE_MICROSTART_MODULE && !startModule.startModuleEnabled())
     {
@@ -1014,6 +1021,8 @@ public:
       Serial.println("Module disabled");
       return;
     }
+    lastLineDetectedLeft = sensorData.reflectanceSensors[0].isDetectingLine;
+    lastLineDetectedRight = sensorData.reflectanceSensors[1].isDetectingLine;
 
     // Reset sensor data status for this loop iteration
     sensorData.distanceSensorsRead = false;
@@ -1024,14 +1033,18 @@ public:
     readDistanceSensors();
     readReflectanceSensors();
 
+    Serial.printf("%d %d %d %d %d\n", isEdgeDetected(), sensorData.reflectanceSensors[0].value, sensorData.reflectanceSensors[1].value, lastLineDetectedLeft, lastLineDetectedRight);
+
     // Process sensors and control robot
     if (handleEdgeDetectionIfNeeded())
     {
       return; // Skip further processing if handling edge
+    }else{
+      motors.setSpeeds(MAX_SPEED, MAX_SPEED);
     }
 
     // Normal tracking behavior - proceed only if no edge detected
-    trackOpponent();
+    // trackOpponent();
 
     // Reset I2C bus if needed - separate from sensor reading for better error handling
     if (sensorData.needsI2CReset)
@@ -1101,7 +1114,13 @@ private:
       for (int i = 0; i < REFLECTANCE_SENSOR_COUNT; i++)
       {
         sensorData.reflectanceSensors[i].value = reflectanceSensors.getValue(i);
-        sensorData.reflectanceSensors[i].isDetectingLine = reflectanceSensors.isDetectingLine(i);
+        sensorData.reflectanceSensors[i].isDetectingLine = reflectanceSensors.isDetectingLine(i, 600);
+        // Update consecutive line detection counter
+        if (sensorData.reflectanceSensors[i].isDetectingLine) {
+          reflectanceConsecutiveLineCount[i]++;
+        } else {
+          reflectanceConsecutiveLineCount[i] = 0;
+        }
       }
       sensorData.reflectanceSensorsRead = true;
     }
@@ -1127,10 +1146,10 @@ private:
       return false;
     }
 
-    // Check each reflectance sensor
+    // Check each reflectance sensor for 3 consecutive detections
     for (int i = 0; i < REFLECTANCE_SENSOR_COUNT; i++)
     {
-      if (sensorData.reflectanceSensors[i].isDetectingLine)
+      if (reflectanceConsecutiveLineCount[i] >= CONSECUTIVE_LINE_THRESHOLD)
       {
         return true;
       }
@@ -1147,8 +1166,35 @@ private:
     // Check for edge detection - this has highest priority
     if (isEdgeDetected())
     {
+      motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
+
       handleEdgeDetection();
       return true; // Edge detected and handled
+    }
+    else if (lastLineDetectedLeft || lastLineDetectedRight)
+    {
+
+      // Start the edge avoidance maneuver
+      edgeAvoidanceEndTime = millis() + EDGE_AVOIDANCE_DURATION_MS;
+
+      // Backup based on which sensor detected the edge
+      if (lastLineDetectedLeft) // Left sensor
+      {
+        // Turn more to the right while backing up
+        // motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, EDGE_AVOIDANCE_SPEED);
+        edgeDetectedLeft = true;
+        Serial.printf("| EDGE DETECTED on left sensor! Backing away to the right\n");
+      }
+      else if (lastLineDetectedRight) // Right sensor
+      {
+        // Turn more to the left while backing up
+        // motors.setSpeeds(EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
+        edgeDetectedLeft = false;
+        Serial.printf("| EDGE DETECTED on right sensor! Backing away to the left\n");
+      }
+
+      // Reset PID to avoid accumulated error
+      pid.reset();
     }
 
     // Check if we're in the middle of an edge avoidance maneuver
@@ -1175,49 +1221,6 @@ private:
    */
   void handleEdgeDetection()
   {
-    // Only proceed if reflectance sensors were successfully read
-    if (!sensorData.reflectanceSensorsRead)
-    {
-      return;
-    }
-
-    // Determine which sensor detected the edge
-    int edgeSensorIndex = -1;
-    for (int i = 0; i < REFLECTANCE_SENSOR_COUNT; i++)
-    {
-      if (sensorData.reflectanceSensors[i].isDetectingLine)
-      {
-        edgeSensorIndex = i;
-        break;
-      }
-    }
-    motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
-
-    if (millis() - edgeAvoidanceEndTime < 0)
-    {
-      return;
-    }
-    // Start the edge avoidance maneuver
-    edgeAvoidanceEndTime = millis() + EDGE_AVOIDANCE_DURATION_MS;
-
-    // Backup based on which sensor detected the edge
-    if (edgeSensorIndex == 0) // Left sensor
-    {
-      // Turn more to the right while backing up
-      // motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, EDGE_AVOIDANCE_SPEED);
-      edgeDetectedLeft = true;
-      Serial.printf("| EDGE DETECTED on left sensor! Backing away to the right\n");
-    }
-    else // Right sensor
-    {
-      // Turn more to the left while backing up
-      // motors.setSpeeds(EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
-      edgeDetectedLeft = false;
-      Serial.printf("| EDGE DETECTED on right sensor! Backing away to the left\n");
-    }
-
-    // Reset PID to avoid accumulated error
-    pid.reset();
   }
 
   //==============================================================================
@@ -1260,8 +1263,8 @@ private:
       // Apply speeds to motors directly
       motors.setSpeeds(leftSpeed, rightSpeed);
 
-      // Serial.printf("| Target Angle: %+4.1f° | Error: %+4.2f | Distance: %4d | Speed: %3d | Rotation: %+3d| LeftM:%+3d| RightM:%+3d",
-      //             targetAngle, error, closestDistance, forwardSpeed, rotationSpeed, leftSpeed, rightSpeed);
+      Serial.printf("| Target Angle: %+4.1f° | Error: %+4.2f | Distance: %4d | Speed: %3d | Rotation: %+3d| LeftM:%+3d| RightM:%+3d",
+                    targetAngle, error, closestDistance, forwardSpeed, rotationSpeed, leftSpeed, rightSpeed);
     }
     else
     {
