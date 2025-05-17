@@ -52,7 +52,7 @@
 #define I2C_PULSE_DELAY_US 5     // Delay between clock transitions
 
 // PID Controller Settings
-#define PID_KP 100.0                // Proportional gain
+#define PID_KP 150.0                // Proportional gain
 #define PID_KI 0.0                  // Integral gain
 #define PID_KD 0.0                  // Derivative gain
 #define PID_MAX_OUTPUT 400          // Maximum output value for motors
@@ -1191,25 +1191,27 @@ private:
     // Start the edge avoidance maneuver
     edgeAvoidanceEndTime = millis() + EDGE_AVOIDANCE_DURATION_MS;
 
+    motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
+
     // Backup based on which sensor detected the edge
     if (edgeSensorIndex == 0) // Left sensor
     {
       // Turn more to the right while backing up
-      motors.setSpeeds(-EDGE_AVOIDANCE_SPEED / 2, -EDGE_AVOIDANCE_SPEED);
+      // motors.setSpeeds(-EDGE_AVOIDANCE_SPEED / 2, -EDGE_AVOIDANCE_SPEED);
       edgeDetectedLeft = true;
       Serial.printf("| EDGE DETECTED on left sensor! Backing away to the right\n");
     }
     else if (edgeSensorIndex == 1) // Right sensor
     {
       // Turn more to the left while backing up
-      motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED / 2);
+      // motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED / 2);
       edgeDetectedLeft = false;
       Serial.printf("| EDGE DETECTED on right sensor! Backing away to the left\n");
     }
     else
     {
       // Straight back if can't determine which sensor or multiple sensors
-      motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
+      // motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
       Serial.printf("| EDGE DETECTED! Backing away\n");
     }
 
