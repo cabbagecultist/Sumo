@@ -52,7 +52,7 @@
 #define I2C_PULSE_DELAY_US 5     // Delay between clock transitions
 
 // PID Controller Settings
-#define PID_KP 100.0                // Proportional gain
+#define PID_KP 150.0                // Proportional gain
 #define PID_KI 0.0                  // Integral gain
 #define PID_KD 0.0                  // Derivative gain
 #define PID_MAX_OUTPUT 400          // Maximum output value for motors
@@ -189,10 +189,10 @@ public:
     {
     case 0:
       Serial.println("Success");
-      break;
+    break;
     case 1:
       Serial.println("Data too long");
-      break;
+    break;
     case 2:
       Serial.println("NACK on address");
       break;
@@ -201,11 +201,11 @@ public:
       break;
     case 4:
       Serial.println("Other error");
-      break;
-    default:
+    break;
+  default:
       Serial.println("Unknown status");
-      break;
-    }
+    break;
+  }
 
     return (status == 0);
   }
@@ -432,7 +432,7 @@ public:
   }
 
   void setBrakes(int leftBrake, int rightBrake)
-  {
+  { 
     shield.setM1Brake(leftBrake);
     shield.setM2Brake(rightBrake);
   }
@@ -471,13 +471,13 @@ public:
   {
     Serial.println("Starting VL53L4CD distance sensor initialization...");
 
-    // Power cycle all sensors by driving XSHUT pins low
+  // Power cycle all sensors by driving XSHUT pins low
     Serial.println("Power cycling all distance sensors...");
     for (int i = 0; i < count; i++)
-    {
-      pinMode(xshutPins[i], OUTPUT);
-      digitalWrite(xshutPins[i], LOW);
-    }
+  {
+    pinMode(xshutPins[i], OUTPUT);
+    digitalWrite(xshutPins[i], LOW);
+  }
     delay(100); // Power-down time
 
     bool allSuccess = true;
@@ -514,8 +514,8 @@ public:
       {
         Serial.printf("Failed to initialize sensor %d after multiple attempts\n", i);
         allSuccess = false;
-        continue;
-      }
+      continue;
+    }
 
       Serial.printf("Successfully initialized sensor %d\n", i);
 
@@ -895,12 +895,11 @@ private:
   // CONSTANTS
   //==============================================================================
   // Robot physical configuration
-  const bool USE_MICROSTART_MODULE = false;
   const float ROBOT_WIDTH = 200.0;                                                    // Robot width in mm (20cm)
   const float SENSOR_ANGLES[DISTANCE_SENSOR_COUNT] = {-36.0, -18.0, 0.0, 18.0, 36.0}; // Angles in degrees
 
   // Edge avoidance parameters
-  const int EDGE_AVOIDANCE_DURATION_MS = 400; // How long to back up when edge detected
+  const int EDGE_AVOIDANCE_DURATION_MS = 500; // How long to back up when edge detected
   const int EDGE_AVOIDANCE_SPEED = 400;       // Speed to back up at
 
   // Sensor processing parameters
@@ -961,8 +960,6 @@ private:
     SensorData() : distanceSensorsRead(false), reflectanceSensorsRead(false), needsI2CReset(false) {}
   };
 
-  bool lastLineDetectedLeft = false;
-  bool lastLineDetectedRight = false;
   // Main sensor data instance
   SensorData sensorData;
 
@@ -983,8 +980,7 @@ public:
         motors(motorDriver),
         pid(PID_KP, PID_KI, PID_KD, PID_MAX_OUTPUT),
         i2c(i2cManager),
-        reflectanceSensors(reflectArray),
-        startModule(irStartModule) {}
+        reflectanceSensors(reflectArray), startModule(irStartModule) {}
 
   /**
    * Initialize tracking mode
@@ -993,12 +989,10 @@ public:
   {
     distanceSensors.init();
     reflectanceSensors.init();
+    startModule.init();
     motors.init();
     motors.stop();
     pid.reset();
-    if (USE_MICROSTART_MODULE)
-      startModule.init();
-
     // Initialize angle history
     for (int i = 0; i < HISTORY_SIZE; i++)
     {
@@ -1007,7 +1001,7 @@ public:
 
     Serial.println("Improved tracking mode initialized - robot will track objects with angle-aware algorithms and edge detection");
   }
-
+  const bool USE_MICROSTART_MODULE = true;
   /**
    * Main loop for tracking mode
    */
@@ -1021,8 +1015,6 @@ public:
       Serial.println("Module disabled");
       return;
     }
-    lastLineDetectedLeft = sensorData.reflectanceSensors[0].isDetectingLine;
-    lastLineDetectedRight = sensorData.reflectanceSensors[1].isDetectingLine;
 
     // Reset sensor data status for this loop iteration
     sensorData.distanceSensorsRead = false;
@@ -1032,8 +1024,6 @@ public:
     // Read all sensors independently
     readDistanceSensors();
     readReflectanceSensors();
-
-    Serial.printf("%d %d %d %d %d\n", isEdgeDetected(), sensorData.reflectanceSensors[0].value, sensorData.reflectanceSensors[1].value, lastLineDetectedLeft, lastLineDetectedRight);
 
     // Process sensors and control robot
     if (handleEdgeDetectionIfNeeded())
@@ -1146,7 +1136,7 @@ private:
       return false;
     }
 
-    // Check each reflectance sensor for 3 consecutive detections
+    // Check each reflectance sensor
     for (int i = 0; i < REFLECTANCE_SENSOR_COUNT; i++)
     {
       if (reflectanceConsecutiveLineCount[i] >= CONSECUTIVE_LINE_THRESHOLD)
@@ -1171,31 +1161,6 @@ private:
       handleEdgeDetection();
       return true; // Edge detected and handled
     }
-    else if (lastLineDetectedLeft || lastLineDetectedRight)
-    {
-
-      // Start the edge avoidance maneuver
-      edgeAvoidanceEndTime = millis() + EDGE_AVOIDANCE_DURATION_MS;
-
-      // Backup based on which sensor detected the edge
-      if (lastLineDetectedLeft) // Left sensor
-      {
-        // Turn more to the right while backing up
-        // motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, EDGE_AVOIDANCE_SPEED);
-        edgeDetectedLeft = true;
-        Serial.printf("| EDGE DETECTED on left sensor! Backing away to the right\n");
-      }
-      else if (lastLineDetectedRight) // Right sensor
-      {
-        // Turn more to the left while backing up
-        // motors.setSpeeds(EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
-        edgeDetectedLeft = false;
-        Serial.printf("| EDGE DETECTED on right sensor! Backing away to the left\n");
-      }
-
-      // Reset PID to avoid accumulated error
-      pid.reset();
-    }
 
     // Check if we're in the middle of an edge avoidance maneuver
     if (millis() < edgeAvoidanceEndTime)
@@ -1209,7 +1174,7 @@ private:
       {
         motors.setSpeeds(EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
       }
-      Serial.println("| Continuing edge avoidance maneuver...");
+      // Serial.println("| Continuing edge avoidance maneuver...");
       return true; // Still handling edge avoidance
     }
 
@@ -1221,6 +1186,52 @@ private:
    */
   void handleEdgeDetection()
   {
+    // Only proceed if reflectance sensors were successfully read
+    if (!sensorData.reflectanceSensorsRead)
+    {
+      return;
+    }
+
+    // Determine which sensor detected the edge
+    int edgeSensorIndex = -1;
+    for (int i = 0; i < REFLECTANCE_SENSOR_COUNT; i++)
+    {
+      if (sensorData.reflectanceSensors[i].isDetectingLine)
+      {
+        edgeSensorIndex = i;
+        break;
+      }
+    }
+
+    // Start the edge avoidance maneuver
+    edgeAvoidanceEndTime = millis() + EDGE_AVOIDANCE_DURATION_MS;
+
+    motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
+
+    // Backup based on which sensor detected the edge
+    if (edgeSensorIndex == 0) // Left sensor
+    {
+      // Turn more to the right while backing up
+      // motors.setSpeeds(-EDGE_AVOIDANCE_SPEED / 2, -EDGE_AVOIDANCE_SPEED);
+      edgeDetectedLeft = true;
+      // Serial.printf("| EDGE DETECTED on left sensor! Backing away to the right %d %d \n", sensorData.reflectanceSensors[0].value, sensorData.reflectanceSensors[1].value);
+    }
+    else if (edgeSensorIndex == 1) // Right sensor
+    {
+      // Turn more to the left while backing up
+      // motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED / 2);
+      edgeDetectedLeft = false;
+      // Serial.printf("| EDGE DETECTED on right sensor! Backing away to the left %d %d \n", sensorData.reflectanceSensors[0].value, sensorData.reflectanceSensors[1].value);
+    }
+    else
+    {
+      // Straight back if can't determine which sensor or multiple sensors
+      // motors.setSpeeds(-EDGE_AVOIDANCE_SPEED, -EDGE_AVOIDANCE_SPEED);
+      // Serial.printf("| EDGE DETECTED! Backing away\n");
+    }
+
+    // Reset PID to avoid accumulated error
+    pid.reset();
   }
 
   //==============================================================================
@@ -1263,8 +1274,8 @@ private:
       // Apply speeds to motors directly
       motors.setSpeeds(leftSpeed, rightSpeed);
 
-      Serial.printf("| Target Angle: %+4.1f° | Error: %+4.2f | Distance: %4d | Speed: %3d | Rotation: %+3d| LeftM:%+3d| RightM:%+3d",
-                    targetAngle, error, closestDistance, forwardSpeed, rotationSpeed, leftSpeed, rightSpeed);
+      // Serial.printf("| Target Angle: %+4.1f° | Error: %+4.2f | Distance: %4d | Speed: %3d | Rotation: %+3d| LeftM:%+3d| RightM:%+3d",
+      //               targetAngle, error, closestDistance, forwardSpeed, rotationSpeed, leftSpeed, rightSpeed);
     }
     else
     {
@@ -1521,7 +1532,7 @@ public:
         trackingMode(distanceSensors, motors, i2c, reflectanceSensors, startModule)
   {
     // Set default test mode
-    selectedMode = MODE_TRACKING;
+    selectedMode = MODE_REFLECTANCE;
     setMode(selectedMode);
   }
 
